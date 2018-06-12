@@ -1,6 +1,6 @@
 # Storyboard library file
 
-# For ease of upgrade DO CHANGE THIS library file 
+# For ease of upgrade DO NOT CHANGE THIS library file 
 # Make your function changes by overriding functions
 # in the site.story file - for site wide changes
 # and in filtergroup specific story file - see examplef1.story
