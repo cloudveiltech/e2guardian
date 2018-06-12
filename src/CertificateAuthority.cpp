@@ -291,9 +291,70 @@ bool CertificateAuthority::writeCertificate(const char *commonname, X509 *newCer
     return true;
 }
 
+void getRemoteCN(char *commonname) {
+	struct sockaddr_in sa;
+    SSL*     ssl;
+    X509*    server_cert;
+ 
+    SSLeay_add_ssl_algorithms();
+    SSL_load_error_strings();
+    SSL_CTX* ctx = SSL_CTX_new (SSLv23_method());
+ 
+    int sd = ::socket (AF_INET, SOCK_STREAM, 0);//create socket
+    if (sd!=-1 && ctx!=NULL)
+    {
+        memset (&sa, '\0', sizeof(sa));
+        sa.sin_family      = AF_INET;
+        sa.sin_addr.s_addr = inet_addr (commonname);   /* Server IP */
+        sa.sin_port        = htons     (443);           /* Server Port number */
+ 
+        int err = ::connect(sd, (struct sockaddr*) &sa, sizeof(sa));
+        if (err!=-1)
+        {
+            ssl = SSL_new (ctx);
+            if (ssl!=NULL)
+            {
+                SSL_set_fd(ssl, sd);
+                err = SSL_connect(ssl);
+                if (err!=-1)
+                {
+                    server_cert = SSL_get_peer_certificate(ssl);
+                    if (server_cert!=NULL)
+                    { 
+						int lastpos = -1;
+
+						X509_NAME *subjName;
+						int idx;
+
+						if( !( subjName = X509_get_subject_name( server_cert )))
+							return;
+
+						idx = X509_NAME_get_index_by_NID( subjName, NID_commonName, -1 );
+						X509_NAME_ENTRY *entry = X509_NAME_get_entry( subjName, idx );
+						ASN1_STRING *entryData = X509_NAME_ENTRY_get_data( entry );
+						unsigned char *utf8;
+						int length = ASN1_STRING_to_UTF8( &utf8, entryData );
+						strcpy(commonname, (const char *)utf8);
+                        X509_free (server_cert);
+                    }
+                }
+                SSL_free (ssl);
+            }
+            ::close(sd);//close socket
+        }
+    }
+    SSL_CTX_free (ctx);
+}
 //generate a certificate for a given hostname
-X509 *CertificateAuthority::generateCertificate(const char *commonname, struct ca_serial *cser)
+X509 *CertificateAuthority::generateCertificate(const char *commonname1, struct ca_serial *cser)
 {
+	char commonname[256];
+	strcpy(commonname, commonname1);
+	if(commonname1[0] >= '0' && commonname1[0] <= '9') {//ip address
+		getRemoteCN(commonname);
+	}
+	
+	
     //create a blank cert
     ERR_clear_error();
     X509 *newCert = X509_new();
@@ -382,7 +443,7 @@ X509 *CertificateAuthority::generateCertificate(const char *commonname, struct c
         X509_free(newCert);
         return NULL;
     }
-
+	
     //set the issuer name of the cert to the cn of the ca
     ERR_clear_error();
     X509_NAME *subjectName = X509_get_subject_name(_caCert);
@@ -408,13 +469,25 @@ X509 *CertificateAuthority::generateCertificate(const char *commonname, struct c
     {
     String temp1 = "DNS:";
     String temp2 = commonname;
+	
     temp1 = temp1 + temp2;
-    char    *value = (char*) temp1.toCharArray();
+		
+	if(commonname[0] == '*') {
+		temp2 = &commonname[2];
+	 } else {
+		 String temp4 = "*.";
+		temp2 = temp4 + temp2;
+	 }
+	 
+    temp1 = temp1 + ",DNS:";
+	temp1 = temp1 + temp2;
+	
+		char    *value = (char*) temp1.toCharArray();
      if( !addExtension(newCert, NID_subject_alt_name, value))
         log_ssl_errors("Error adding subjectAltName to the request", commonname);
-     }
-
-
+     
+    }
+	
     //sign it using the ca
     ERR_clear_error();
     if (!X509_sign(newCert, _caPrivKey, EVP_sha256())) {
