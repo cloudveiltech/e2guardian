@@ -291,7 +291,7 @@ bool CertificateAuthority::writeCertificate(const char *commonname, X509 *newCer
     return true;
 }
 
-void getRemoteCN(char *commonname) {
+void getRemoteCN(char *commonname, char *resAltName) {
 	struct sockaddr_in sa;
     SSL*     ssl;
     X509*    server_cert;
@@ -328,13 +328,48 @@ void getRemoteCN(char *commonname) {
 
 						if( !( subjName = X509_get_subject_name( server_cert )))
 							return;
+						{
+							idx = X509_NAME_get_index_by_NID( subjName, NID_commonName, -1 );
+							X509_NAME_ENTRY *entry = X509_NAME_get_entry( subjName, idx );
+							ASN1_STRING *entryData = X509_NAME_ENTRY_get_data( entry );
+							unsigned char *utf8;
+							int length = ASN1_STRING_to_UTF8( &utf8, entryData );
+							strcpy(commonname, (const char *)utf8);
+						}
+					
+						{
+							String altName = "DNS:";
+							String comma = ",DNS:";
+							int i;
+							int san_names_nb = -1;
+							STACK_OF(GENERAL_NAME) *san_names = NULL;
 
-						idx = X509_NAME_get_index_by_NID( subjName, NID_commonName, -1 );
-						X509_NAME_ENTRY *entry = X509_NAME_get_entry( subjName, idx );
-						ASN1_STRING *entryData = X509_NAME_ENTRY_get_data( entry );
-						unsigned char *utf8;
-						int length = ASN1_STRING_to_UTF8( &utf8, entryData );
-						strcpy(commonname, (const char *)utf8);
+							// Try to extract the names within the SAN extension from the certificate
+							san_names = (stack_st_GENERAL_NAME*)X509_get_ext_d2i((X509 *) server_cert, NID_subject_alt_name, NULL, NULL);
+							if (san_names != NULL) {
+								
+								san_names_nb = sk_GENERAL_NAME_num(san_names);
+
+								// Check each name within the extension
+								for (i=0; i<san_names_nb; i++) {
+									const GENERAL_NAME *current_name = sk_GENERAL_NAME_value(san_names, i);
+
+									if (current_name->type == GEN_DNS) {
+										// Current name is a DNS name, let's check it
+										char *dns_name = (char *) ASN1_STRING_data(current_name->d.dNSName);
+										String dnsName = dns_name;
+										if(i > 0) {										
+											altName = altName + comma;
+										}
+										altName = altName + dnsName;
+									}
+								}
+								sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
+
+							}
+							
+							strcpy(resAltName, altName.c_str());
+						}
                         X509_free (server_cert);
                     }
                 }
@@ -349,11 +384,14 @@ void getRemoteCN(char *commonname) {
 X509 *CertificateAuthority::generateCertificate(const char *commonname1, struct ca_serial *cser)
 {
 	char commonname[256];
-	strcpy(commonname, commonname1);
-	if(commonname1[0] >= '0' && commonname1[0] <= '9') {//ip address
-		getRemoteCN(commonname);
-	}
+	char altname[20480];
+	altname[0] = '\0';
 	
+	strcpy(commonname, commonname1);
+	strcpy(altname, commonname1);
+	if(commonname1[0] >= '0' && commonname1[0] <= '9') {//ip address
+		getRemoteCN(commonname, altname);
+	} 
 	
     //create a blank cert
     ERR_clear_error();
@@ -467,23 +505,8 @@ X509 *CertificateAuthority::generateCertificate(const char *commonname1, struct 
         return NULL;
     }
     {
-    String temp1 = "DNS:";
-    String temp2 = commonname;
-	
-    temp1 = temp1 + temp2;
 		
-	if(commonname[0] == '*') {
-		temp2 = &commonname[2];
-	 } else {
-		 String temp4 = "*.";
-		temp2 = temp4 + temp2;
-	 }
-	 
-    temp1 = temp1 + ",DNS:";
-	temp1 = temp1 + temp2;
-	
-		char    *value = (char*) temp1.toCharArray();
-     if( !addExtension(newCert, NID_subject_alt_name, value))
+     if( !addExtension(newCert, NID_subject_alt_name, altname))
         log_ssl_errors("Error adding subjectAltName to the request", commonname);
      
     }
